@@ -24,10 +24,12 @@ const (
 	KeyStartTime    = "startTime"
 	KeyEndTime      = "endTime"
 	KeyIntervalSize = "intervalSize"
+	KeyAggregateVersion = "aggregateVersion"
 
 	PaginationMaxLimit      = 500
 	PaginationDefaultLimit  = 500
 	PaginationDefaultOffset = 0
+	VersionDefault          = 0
 )
 
 var (

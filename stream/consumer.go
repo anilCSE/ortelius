@@ -29,7 +29,7 @@ type consumer struct {
 
 // NewConsumerFactory returns a processorFactory for the given service consumer
 func NewConsumerFactory(factory serviceConsumerFactory, eventType EventType) ProcessorFactory {
-	return func(conf cfg.Config, networkID uint32, chainVM string, chainID string) (Processor, error) {
+	return func(conf cfg.Config, networkID uint32, chainVM string, chainID string, log *logging.Log) (Processor, error) {
 		var (
 			err error
 			c   = &consumer{
@@ -45,7 +45,7 @@ func NewConsumerFactory(factory serviceConsumerFactory, eventType EventType) Pro
 		}
 
 		// Bootstrap our service
-		ctx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancelFn := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancelFn()
 		if err = c.consumer.Bootstrap(ctx); err != nil {
 			return nil, err
