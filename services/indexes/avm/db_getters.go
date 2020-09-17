@@ -117,7 +117,11 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 	// Build the query and load the base data
 	dbRunner := db.newSession("get_transaction_aggregates_histogram")
 
+	var builder *dbr.SelectStmt
+
 	switch(params.Version) {
+
+	// new requests v=1 use the avm_asset_aggregation tables
 	case 1:
 		columns := []string{
 			"CAST(COALESCE(SUM(avm_asset_aggregation.transaction_volume),0) AS CHAR) as transaction_volume",
@@ -142,18 +146,6 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 
 		if params.AssetID != nil {
 			builder.Where("avm_asset_aggregation.asset_id = ?", params.AssetID.String())
-		}
-
-		if requestedIntervalCount > 0 {
-			builder.
-				GroupBy("idx").
-				OrderAsc("idx").
-				Limit(uint64(requestedIntervalCount))
-		}
-
-		_, err := builder.LoadContext(ctx, &intervals)
-		if err != nil {
-			return nil, err
 		}
 	default:
 		columns := []string{
@@ -182,18 +174,18 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 		if params.AssetID != nil {
 			builder.Where("avm_outputs.asset_id = ?", params.AssetID.String())
 		}
+	}
 
-		if requestedIntervalCount > 0 {
-			builder.
-				GroupBy("idx").
-				OrderAsc("idx").
-				Limit(uint64(requestedIntervalCount))
-		}
+	if requestedIntervalCount > 0 {
+		builder.
+			GroupBy("idx").
+			OrderAsc("idx").
+			Limit(uint64(requestedIntervalCount))
+	}
 
-		_, err := builder.LoadContext(ctx, &intervals)
-		if err != nil {
-			return nil, err
-		}
+	_, err := builder.LoadContext(ctx, &intervals)
+	if err != nil {
+		return nil, err
 	}
 
 	// If no intervals were requested then the total aggregate is equal to the
