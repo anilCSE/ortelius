@@ -31,14 +31,20 @@ var (
 )
 
 type ProducerTasker struct {
-	initlock    sync.RWMutex
-	connections *services.Connections
-	log         *logging.Log
-	plock       sync.Mutex
-	avmOutputs  func(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error)
+	initlock           sync.RWMutex
+	connections        *services.Connections
+	log                *logging.Log
+	plock              sync.Mutex
+	avmOutputsCursor   func(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error)
+	insertAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error)
+	updateAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error)
 }
 
-var producerTaskerInstance ProducerTasker
+var producerTaskerInstance = ProducerTasker{
+	avmOutputsCursor:   AvmOutputsAggregateCursor,
+	insertAvmAggregate: InsertAvmAssetAggregation,
+	updateAvmAggregate: UpdateAvmAssetAggregation,
+}
 
 func initializeProducerTasker(conf cfg.Config, log *logging.Log) error {
 	producerTaskerInstance.initlock.Lock()
@@ -182,12 +188,7 @@ func (t *ProducerTasker) RefreshAggregates() error {
 		aggregateTs = roundedAggregateTs
 	}
 
-	var rows *sql.Rows
-	if t.avmOutputs != nil {
-		rows, err = t.avmOutputs(ctx, sess, aggregateTs)
-	} else {
-		rows, err = t.AvmOutputsAggregate(ctx, sess, aggregateTs)
-	}
+	rows, err := t.avmOutputsCursor(ctx, sess, aggregateTs)
 
 	if err != nil {
 		t.log.Error("error query %s", err.Error())
@@ -213,9 +214,9 @@ func (t *ProducerTasker) RefreshAggregates() error {
 			return err
 		}
 
-		_, err := t.InsertAvmAssetAggregation(ctx, sess, aggregates)
+		_, err := t.insertAvmAggregate(ctx, sess, aggregates)
 		if db.ErrIsDuplicateEntryError(err) {
-			_, err := t.UpdateAvmAssetAggregation(sess, ctx, aggregates)
+			_, err := t.updateAvmAggregate(ctx, sess, aggregates)
 			// the update failed.  (could be truncation?)... Punt..
 			if err != nil {
 				t.log.Error("update %s", err.Error())
@@ -249,7 +250,21 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	return nil
 }
 
-func (t *ProducerTasker) UpdateAvmAssetAggregation(sess *dbr.Session, ctx context.Context, aggregates Aggregrates) (sql.Result, error) {
+func (t *ProducerTasker) ConstAggregateDeleteFrame() time.Duration {
+	return aggregateDeleteFrame
+}
+
+func initRefreshAggregatesTick(t *ProducerTasker) {
+	timer := time.NewTicker(aggregationTick)
+	defer timer.Stop()
+
+	t.RefreshAggregates()
+	for range timer.C {
+		t.RefreshAggregates()
+	}
+}
+
+func UpdateAvmAssetAggregation(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
 	return sess.ExecContext(ctx, "update avm_asset_aggregation "+
 		"set "+
 		" transaction_volume=CONVERT(?,DECIMAL(65)),"+
@@ -267,7 +282,7 @@ func (t *ProducerTasker) UpdateAvmAssetAggregation(sess *dbr.Session, ctx contex
 		aggregates.AssetId)
 }
 
-func (t *ProducerTasker) InsertAvmAssetAggregation(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
+func InsertAvmAssetAggregation(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
 	return sess.ExecContext(ctx, "insert into avm_asset_aggregation "+
 		"(aggregate_ts,asset_id,transaction_volume,transaction_count,address_count,asset_count,output_count) "+
 		"values (?,?,CONVERT(?,DECIMAL(65)),?,?,?,?)",
@@ -280,7 +295,7 @@ func (t *ProducerTasker) InsertAvmAssetAggregation(ctx context.Context, sess *db
 		aggregates.OutputCount)
 }
 
-func (t *ProducerTasker) AvmOutputsAggregate(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error) {
+func AvmOutputsAggregateCursor(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error) {
 	rows, err := sess.
 		Select(aggregateColumns...).
 		From("avm_outputs").
@@ -289,18 +304,4 @@ func (t *ProducerTasker) AvmOutputsAggregate(ctx context.Context, sess *dbr.Sess
 		Where("avm_outputs.created_at >= ?", aggregateTs).
 		RowsContext(ctx)
 	return rows, err
-}
-
-func (t *ProducerTasker) ConstAggregateDeleteFrame() time.Duration {
-	return aggregateDeleteFrame
-}
-
-func initRefreshAggregatesTick(t *ProducerTasker) {
-	timer := time.NewTicker(aggregationTick)
-	defer timer.Stop()
-
-	t.RefreshAggregates()
-	for range timer.C {
-		t.RefreshAggregates()
-	}
 }
