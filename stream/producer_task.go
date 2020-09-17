@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/ava-labs/ortelius/services"
 	"github.com/ava-labs/ortelius/services/db"
-	"github.com/ava-labs/ortelius/services/params"
+	"github.com/ava-labs/ortelius/services/indexes/params"
 	"sync"
 	"time"
 

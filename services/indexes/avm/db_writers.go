@@ -14,7 +14,7 @@ import (
 	"github.com/ava-labs/avalanchego/vms/avm"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	"github.com/ava-labs/ortelius/services/db"
-	"github.com/ava-labs/ortelius/services/params"
+	"github.com/ava-labs/ortelius/services/indexes/params"
 	"github.com/gocraft/dbr/v2"
 	"github.com/gocraft/health"
 
