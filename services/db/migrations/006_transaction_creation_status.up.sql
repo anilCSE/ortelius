@@ -1,11 +1,11 @@
-create table asset_aggregation_state
+create table avm_asset_aggregation_state
 (
     id                       bigint unsigned not null primary key,
     created_at               timestamp         not null default current_timestamp,
     current_created_at       timestamp         not null default current_timestamp
 );
 
-create table asset_aggregation (
+create table avm_asset_aggregation (
    aggregate_ts             timestamp         not null,
    asset_id                 varchar(50)       not null,
    transaction_volume       DECIMAL(65)       default 0,
@@ -16,4 +16,4 @@ create table asset_aggregation (
    PRIMARY KEY(aggregate_ts DESC, asset_id)
 );
 
-create index asset_aggregation_asset_id_created_at on asset_aggregation (asset_id, aggregate_ts DESC);
+create index avm_asset_aggregation_asset_id_created_at on avm_asset_aggregation (asset_id, aggregate_ts DESC);

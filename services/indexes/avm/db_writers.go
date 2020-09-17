@@ -337,7 +337,7 @@ func (db *DB) ingestOutput(ctx services.ConsumerCtx, txID ids.ID, idx uint32, as
 	// update the created_at on the state table if we have an earlier date in ctx.Time().
 	// which means we need to re-run aggregation calculations from this earlier date.
 	ctx.DB().
-		Update("asset_aggregation_state").
+		Update("avm_asset_aggregation_state").
 		Set("created_at", ctx.Time()).
 		Where("id = ? and created_at > ?", params.StateLiveId, ctx.Time()).
 		ExecContext(ctx.Ctx())

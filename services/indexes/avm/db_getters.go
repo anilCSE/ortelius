@@ -120,28 +120,28 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 	switch(params.Version) {
 	case 1:
 		columns := []string{
-			"CAST(COALESCE(SUM(asset_aggregation.transaction_volume),0) AS CHAR) as transaction_volume",
-			"SUM(asset_aggregation.transaction_count) AS transaction_count",
-			"SUM(asset_aggregation.address_count) AS address_count",
-			"SUM(asset_aggregation.asset_count) AS asset_count",
-			"SUM(asset_aggregation.output_count) AS output_count",
+			"CAST(COALESCE(SUM(avm_asset_aggregation.transaction_volume),0) AS CHAR) as transaction_volume",
+			"SUM(avm_asset_aggregation.transaction_count) AS transaction_count",
+			"SUM(avm_asset_aggregation.address_count) AS address_count",
+			"SUM(avm_asset_aggregation.asset_count) AS asset_count",
+			"SUM(avm_asset_aggregation.output_count) AS output_count",
 		}
 
 		if requestedIntervalCount > 0 {
 			columns = append(columns, fmt.Sprintf(
-				"FLOOR((UNIX_TIMESTAMP(asset_aggregation.aggregate_ts)-%d) / %d) AS idx",
+				"FLOOR((UNIX_TIMESTAMP(avm_asset_aggregation.aggregate_ts)-%d) / %d) AS idx",
 				params.StartTime.Unix(),
 				intervalSeconds))
 		}
 
 		builder := dbRunner.
 			Select(columns...).
-			From("asset_aggregation").
-			Where("asset_aggregation.aggregate_ts >= ?", params.StartTime).
-			Where("asset_aggregation.aggregate_ts < ?", params.EndTime)
+			From("avm_asset_aggregation").
+			Where("avm_asset_aggregation.aggregate_ts >= ?", params.StartTime).
+			Where("avm_asset_aggregation.aggregate_ts < ?", params.EndTime)
 
 		if params.AssetID != nil {
-			builder.Where("asset_aggregation.asset_id = ?", params.AssetID.String())
+			builder.Where("avm_asset_aggregation.asset_id = ?", params.AssetID.String())
 		}
 
 		if requestedIntervalCount > 0 {
