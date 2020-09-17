@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/ava-labs/ortelius/services"
+	"github.com/ava-labs/ortelius/services/indexes/avm"
 	"github.com/ava-labs/ortelius/services/indexes/params"
 	"github.com/ava-labs/ortelius/testhelperlib"
 	"github.com/gocraft/dbr/v2"
@@ -71,14 +72,14 @@ func TestParse(t *testing.T) {
 			RowsContext(ctx)
 	}
 
-	aggregateMap := map[string]*Aggregrates{}
+	aggregateMap := map[string]*avm.AvmAggregratesModel{}
 
-	insertAvm := func(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
+	insertAvm := func(ctx context.Context, sess *dbr.Session, aggregates avm.AvmAggregratesModel) (sql.Result, error) {
 		aggregateMap[aggregates.AggregateTs.String()+":"+aggregates.AssetId] = &aggregates
 		return nil, nil
 	}
 
-	updateAvm := func(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
+	updateAvm := func(ctx context.Context, sess *dbr.Session, aggregates avm.AvmAggregratesModel) (sql.Result, error) {
 		aggregateMap[aggregates.AggregateTs.String()+":"+aggregates.AssetId] = &aggregates
 		return nil, nil
 	}
@@ -124,34 +125,22 @@ func TestParse(t *testing.T) {
 		Pair("transaction_id", 1).
 		Exec()
 
-	aggregates := Aggregrates{}
+	aggregates := avm.AvmAggregratesModel{}
 	aggregates.AggregateTs = time.Now().Add(time.Duration(int64(tasker.ConstAggregateDeleteFrame().Milliseconds()+1)) * time.Millisecond)
 	aggregates.AssetId = "futureasset"
-	InsertAvmAssetAggregation(ctx, sess, aggregates)
+	avm.InsertAvmAssetAggregation(ctx, sess, aggregates)
+	avm.UpdateAvmAssetAggregation(ctx, sess, aggregates)
 
 	err = tasker.RefreshAggregates()
 	if err != nil {
 		t.Errorf("refresh failed %s", err.Error())
 	}
 
-	var transactionTsBackup TransactionTs
-	sess.
-		Select("id", "created_at", "current_created_at").
-		From("avm_asset_aggregation_state").
-		Where("id = ?", params.StateBackupId).
-		LoadOneContext(ctx, &transactionTsBackup)
-
-	var transactionTs TransactionTs
-	sess.
-		Select("id", "created_at", "current_created_at").
-		From("avm_asset_aggregation_state").
-		Where("id = ?", params.StateLiveId).
-		LoadOneContext(ctx, &transactionTs)
-
+	transactionTsBackup, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
+	transactionTs, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
 	if transactionTs.Id != params.StateLiveId {
 		t.Errorf("state live not created")
 	}
-
 	if transactionTsBackup.Id != 0 {
 		t.Errorf("state backup not removed")
 	}

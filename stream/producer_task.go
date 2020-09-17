@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/ava-labs/ortelius/services"
 	"github.com/ava-labs/ortelius/services/db"
+	"github.com/ava-labs/ortelius/services/indexes/avm"
 	"github.com/ava-labs/ortelius/services/indexes/params"
 	"github.com/gocraft/dbr/v2"
 	"sync"
@@ -36,14 +37,14 @@ type ProducerTasker struct {
 	log                *logging.Log
 	plock              sync.Mutex
 	avmOutputsCursor   func(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error)
-	insertAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error)
-	updateAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error)
+	insertAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates avm.AvmAggregratesModel) (sql.Result, error)
+	updateAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates avm.AvmAggregratesModel) (sql.Result, error)
 }
 
 var producerTaskerInstance = ProducerTasker{
 	avmOutputsCursor:   AvmOutputsAggregateCursor,
-	insertAvmAggregate: InsertAvmAssetAggregation,
-	updateAvmAggregate: UpdateAvmAssetAggregation,
+	insertAvmAggregate: avm.InsertAvmAssetAggregation,
+	updateAvmAggregate: avm.UpdateAvmAssetAggregation,
 }
 
 func initializeProducerTasker(conf cfg.Config, log *logging.Log) error {
@@ -69,22 +70,6 @@ func (t *ProducerTasker) Start() {
 	go initRefreshAggregatesTick(t)
 }
 
-type Aggregrates struct {
-	AggregateTs       time.Time `json:"aggregateTs"`
-	AssetId           string    `json:"assetId"`
-	TransactionVolume string    `json:"transactionVolume"`
-	TransactionCount  uint64    `json:"transactionCount"`
-	AddressCount      uint64    `json:"addresCount"`
-	AssetCount        uint64    `json:"assetCount"`
-	OutputCount       uint64    `json:"outputCount"`
-}
-
-type TransactionTs struct {
-	Id               uint64    `json:"id"`
-	CreatedAt        time.Time `json:"createdAt"`
-	CurrentCreatedAt time.Time `json:"currentCreatedAt"`
-}
-
 func (t *ProducerTasker) RefreshAggregates() error {
 	t.plock.Lock()
 	defer t.plock.Unlock()
@@ -95,25 +80,15 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	sess := t.connections.DB().NewSession(job)
 
 	var err error
-	var transactionTs TransactionTs
+	var transactionTs avm.AvmAssetAggregationState
 
 	// initialize the assset_aggregation_state table with id=stateLiveId row.
 	// if the row has not been created..
 	// created at and current created at set to time(0), so the first run will re-build aggregates for the entire db.
-	sess.
-		InsertInto("avm_asset_aggregation_state").
-		Pair("id", params.StateLiveId).
-		Pair("created_at", time.Unix(1, 0)).
-		Pair("current_created_at", time.Unix(1, 0)).
-		ExecContext(ctx)
+	avm.InsertAvmAssetAggregationState(ctx, sess, params.StateLiveId, time.Unix(1, 0), time.Unix(1, 0))
 
 	// check if the backup row exists, if found we crashed from a previous run.
-	var transactionTsBackup TransactionTs
-	sess.
-		Select("id", "created_at", "current_created_at").
-		From("avm_asset_aggregation_state").
-		Where("id = ?", params.StateBackupId).
-		LoadOneContext(ctx, &transactionTsBackup)
+	transactionTsBackup, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
 
 	if transactionTsBackup.Id == uint64(params.StateBackupId) {
 		// re-process from backup row..
@@ -134,11 +109,7 @@ func (t *ProducerTasker) RefreshAggregates() error {
 			return err
 		}
 
-		sess.
-			Select("id", "created_at", "current_created_at").
-			From("avm_asset_aggregation_state").
-			Where("id = ?", params.StateLiveId).
-			LoadOneContext(ctx, &transactionTs)
+		transactionTs, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
 
 		// this is really bad, the state live row was not created..  we cannot proceed safely.
 		if transactionTs.Id != params.StateLiveId {
@@ -147,24 +118,14 @@ func (t *ProducerTasker) RefreshAggregates() error {
 		}
 
 		// id=stateBackupId backup row - for crash recovery
-		sess.
-			InsertInto("avm_asset_aggregation_state").
-			Pair("id", params.StateBackupId).
-			Pair("created_at", transactionTs.CreatedAt).
-			Pair("current_created_at", transactionTs.CurrentCreatedAt).
-			ExecContext(ctx)
+		avm.InsertAvmAggregationState(ctx, sess, transactionTs)
 
 		// setup the transactionBackup so that it can be removed.
 		// copy of the live forw.
 		transactionTsBackup = transactionTs
 		transactionTsBackup.Id = params.StateBackupId
 
-		var transactionTsBackupCheck TransactionTs
-		sess.
-			Select("id", "created_at", "current_created_at").
-			From("avm_asset_aggregation_state").
-			Where("id = ?", params.StateBackupId).
-			LoadOneContext(ctx, &transactionTsBackupCheck)
+		transactionTsBackupCheck, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
 
 		// so for some reason the backup row was _not_ created.
 		// it could be ours or others, but we still don't have one, which is bad.
@@ -196,7 +157,7 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	}
 
 	for ok := rows.Next(); ok; ok = rows.Next() {
-		var aggregates Aggregrates
+		var aggregates avm.AvmAggregratesModel
 		err = rows.Scan(&aggregates.AggregateTs,
 			&aggregates.AssetId,
 			&aggregates.TransactionVolume,
@@ -234,16 +195,13 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	// lets make sure our run created this row ..  so check for current_created_at match..
 	// if we didn't create the row, the creator would delete it..
 	// if things go really bad, then when the process restarts the row will be re-selected and deleted then..
-	_, err = sess.
+	sess.
 		DeleteFrom("avm_asset_aggregation_state").
 		Where("id = ? and current_created_at = ?", params.StateBackupId, transactionTsBackup.CurrentCreatedAt).
 		ExecContext(ctx)
 
 	// delete aggregate data before aggregateDeleteFrame
-	sess.
-		DeleteFrom("avm_asset_aggregation").
-		Where("aggregate_ts < ?", aggregateTs.Add(aggregateDeleteFrame)).
-		ExecContext(ctx)
+	avm.PurgeOldAvmAssetAggregation(ctx, sess, aggregateTs.Add(aggregateDeleteFrame))
 
 	t.log.Info("processed up to %s", aggregateTs.String())
 
@@ -262,37 +220,6 @@ func initRefreshAggregatesTick(t *ProducerTasker) {
 	for range timer.C {
 		t.RefreshAggregates()
 	}
-}
-
-func UpdateAvmAssetAggregation(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
-	return sess.ExecContext(ctx, "update avm_asset_aggregation "+
-		"set "+
-		" transaction_volume=CONVERT(?,DECIMAL(65)),"+
-		" transaction_count=?,"+
-		" address_count=?,"+
-		" asset_count=?,"+
-		" output_count=? "+
-		"where aggregate_ts = ? AND asset_id = ?",
-		aggregates.TransactionVolume, // string -> converted to decimal in db
-		aggregates.TransactionCount,
-		aggregates.AddressCount,
-		aggregates.OutputCount,
-		aggregates.AssetCount,
-		aggregates.AggregateTs,
-		aggregates.AssetId)
-}
-
-func InsertAvmAssetAggregation(ctx context.Context, sess *dbr.Session, aggregates Aggregrates) (sql.Result, error) {
-	return sess.ExecContext(ctx, "insert into avm_asset_aggregation "+
-		"(aggregate_ts,asset_id,transaction_volume,transaction_count,address_count,asset_count,output_count) "+
-		"values (?,?,CONVERT(?,DECIMAL(65)),?,?,?,?)",
-		aggregates.AggregateTs,
-		aggregates.AssetId,
-		aggregates.TransactionVolume, // string -> converted to decimal in db
-		aggregates.TransactionCount,
-		aggregates.AddressCount,
-		aggregates.AssetCount,
-		aggregates.OutputCount)
 }
 
 func AvmOutputsAggregateCursor(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error) {
