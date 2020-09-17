@@ -87,7 +87,7 @@ func (t *ProducerTasker) Init(connections *services.Connections) error {
 type Aggregrates struct {
 	AggregateTs       time.Time `json:"aggregateTs"`
 	AssetId           string    `json:"assetId"`
-	TransactionVolume uint64    `json:"transactionVolume"`
+	TransactionVolume string    `json:"transactionVolume"`
 	TransactionCount  uint64    `json:"transactionCount"`
 	AddressCount      uint64    `json:"addresCount"`
 	AssetCount        uint64    `json:"assetCount"`
@@ -106,7 +106,7 @@ func (t *ProducerTasker) RefreshAggregates() {
 	columns := []string{
 		"FROM_UNIXTIME(floor(UNIX_TIMESTAMP(avm_outputs.created_at) / 60) * 60) as aggregate_ts",
 		"avm_outputs.asset_id",
-		"COALESCE(SUM(avm_outputs.amount), 0) AS transaction_volume",
+		"CAST(COALESCE(SUM(avm_outputs.amount), 0) AS CHAR) AS transaction_volume",
 		"COUNT(DISTINCT(avm_outputs.transaction_id)) AS transaction_count",
 		"COUNT(DISTINCT(avm_output_addresses.address)) AS address_count",
 		"COUNT(DISTINCT(avm_outputs.asset_id)) AS asset_count",
@@ -176,35 +176,34 @@ func (t *ProducerTasker) RefreshAggregates() {
 
 		if err != nil {
 			t.log.Error("error query %s", err.Error())
-			return
 		}
 
-		_, err := sess.InsertInto("asset_aggregation").
-			Pair("aggregate_ts", aggregates.AggregateTs).
-			Pair("asset_id", aggregates.AssetId).
-			Pair("transaction_volume", aggregates.TransactionVolume).
-			Pair("transaction_count", aggregates.TransactionCount).
-			Pair("address_count", aggregates.AddressCount).
-			Pair("asset_count", aggregates.AssetCount).
-			Pair("output_count", aggregates.OutputCount).
-			ExecContext(ctx)
+		_, err := sess.ExecContext(ctx, "insert into asset_aggregation "+
+			"(aggregate_ts,asset_id,transaction_volume,transaction_count,address_count,asset_count,output_count) "+
+			"values (?,?,CONVERT(?,DECIMAL(65)),?,?,?,?)",
+			aggregates.AggregateTs,
+			aggregates.AssetId,
+			aggregates.TransactionVolume,
+			aggregates.TransactionCount,
+			aggregates.AddressCount,
+			aggregates.AssetCount,
+			aggregates.OutputCount)
 		if db.ErrIsDuplicateEntryError(err) {
-			_, err = sess.
-				Update("asset_aggregation").
-				Set("transaction_volume", aggregates.TransactionVolume).
-				Set("transaction_count", aggregates.TransactionCount).
-				Set("address_count", aggregates.AddressCount).
-				Set("asset_count", aggregates.AssetCount).
-				Set("output_count", aggregates.OutputCount).
-				Where("aggregate_ts = ? AND asset_id = ?", aggregates.AggregateTs, aggregates.AssetId).
-				ExecContext(ctx)
+			_, err := sess.ExecContext(ctx, "update asset_aggregation "+
+				"set transaction_volume=CONVERT(?,DECIMAL(65)),transaction_count=?,address_count=?,asset_count=?,output_count=? "+
+				"where aggregate_ts = ? AND asset_id = ?",
+				aggregates.TransactionVolume,
+				aggregates.TransactionCount,
+				aggregates.AddressCount,
+				aggregates.OutputCount,
+				aggregates.AssetCount,
+				aggregates.AggregateTs,
+				aggregates.AssetId)
 			if err != nil {
 				t.log.Error("update %s", err.Error())
-				return
 			}
 		} else if err != nil {
 			t.log.Error("insert %s", err.Error())
-			return
 		}
 	}
 

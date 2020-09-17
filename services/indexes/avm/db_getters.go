@@ -118,13 +118,13 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 	dbRunner := db.newSession("get_transaction_aggregates_histogram")
 
 	switch(params.Version) {
-	case 2:
+	case 1:
 		columns := []string{
-			"SUM(asset_aggregation.transaction_volume)",
-			"SUM(asset_aggregation.transaction_count)",
-			"SUM(asset_aggregation.address_count)",
-			"SUM(asset_aggregation.asset_count)",
-			"SUM(asset_aggregation.output_count)",
+			"CAST(COALESCE(SUM(asset_aggregation.transaction_volume),0) AS CHAR) as transaction_volume",
+			"SUM(asset_aggregation.transaction_count) AS transaction_count",
+			"SUM(asset_aggregation.address_count) AS address_count",
+			"SUM(asset_aggregation.asset_count) AS asset_count",
+			"SUM(asset_aggregation.output_count) AS output_count",
 		}
 
 		if requestedIntervalCount > 0 {
@@ -137,8 +137,8 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 		builder := dbRunner.
 			Select(columns...).
 			From("asset_aggregation").
-			Where("asset_aggregation.aggregation_ts >= ?", params.StartTime).
-			Where("asset_aggregation.aggregation_ts < ?", params.EndTime)
+			Where("asset_aggregation.aggregate_ts >= ?", params.StartTime).
+			Where("asset_aggregation.aggregate_ts < ?", params.EndTime)
 
 		if params.AssetID != nil {
 			builder.Where("asset_aggregation.asset_id = ?", params.AssetID.String())
