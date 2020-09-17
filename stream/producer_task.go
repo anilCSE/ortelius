@@ -29,6 +29,7 @@ var (
 		"COUNT(DISTINCT(avm_outputs.asset_id)) AS asset_count",
 		"COUNT(avm_outputs.id) AS output_count",
 	}
+	additionalHours = time.Duration((365 * 24) * time.Hour)
 )
 
 type ProducerTasker struct {
@@ -39,12 +40,14 @@ type ProducerTasker struct {
 	avmOutputsCursor   func(ctx context.Context, sess *dbr.Session, aggregateTs time.Time) (*sql.Rows, error)
 	insertAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates avm.AvmAggregratesModel) (sql.Result, error)
 	updateAvmAggregate func(ctx context.Context, sess *dbr.Session, aggregates avm.AvmAggregratesModel) (sql.Result, error)
+	timeStampProducer  func() time.Time
 }
 
 var producerTaskerInstance = ProducerTasker{
 	avmOutputsCursor:   AvmOutputsAggregateCursor,
 	insertAvmAggregate: avm.InsertAvmAssetAggregation,
 	updateAvmAggregate: avm.UpdateAvmAssetAggregation,
+	timeStampProducer:  func() time.Time { return time.Now() },
 }
 
 func initializeProducerTasker(conf cfg.Config, log *logging.Log) error {
@@ -101,9 +104,10 @@ func (t *ProducerTasker) RefreshAggregates() error {
 		// current_created_at is set to the newest aggregation timestamp from the message queue.
 		// and in the same update we reset created_at to a time in the future.
 		// when we get new messages from the queue, they will execute the sql _after_ this update, and set created_at to an earlier date.
+		updatedCurrentCreated := t.timeStampProducer().Add(additionalHours)
 		_, err = sess.ExecContext(ctx, "update avm_asset_aggregation_state "+
 			"set current_created_at=created_at, created_at=? "+
-			"where id=?", params.StateLiveId, time.Now().Add((365*24)*time.Hour))
+			"where id=?", updatedCurrentCreated, params.StateLiveId)
 		if err != nil {
 			t.log.Error("atomic swap %s", err.Error())
 			return err
@@ -136,48 +140,38 @@ func (t *ProducerTasker) RefreshAggregates() error {
 		}
 	}
 
-	aggregateTs := transactionTs.CurrentCreatedAt
+	aggregateTs := ComputeAndRoundCurrentAggregateTs(transactionTs)
 
-	// round to the nearest minute..
-	roundedAggregateTs := aggregateTs.Round(1 * time.Minute)
-
-	// if we rounded half up, then lets just step back 1 minute to avoid losing anything.
-	// better to redo a minute than lose one.
-	if roundedAggregateTs.After(aggregateTs) {
-		aggregateTs = roundedAggregateTs.Add(-1 * time.Minute)
-	} else {
-		aggregateTs = roundedAggregateTs
-	}
-
-	rows, err := t.avmOutputsCursor(ctx, sess, aggregateTs)
-
+	var rows *sql.Rows
+	rows, err = t.avmOutputsCursor(ctx, sess, aggregateTs)
 	if err != nil {
 		t.log.Error("error query %s", err.Error())
 		return err
 	}
 
 	for ok := rows.Next(); ok; ok = rows.Next() {
-		var aggregates avm.AvmAggregratesModel
-		err = rows.Scan(&aggregates.AggregateTs,
-			&aggregates.AssetId,
-			&aggregates.TransactionVolume,
-			&aggregates.TransactionCount,
-			&aggregates.AddressCount,
-			&aggregates.AssetCount,
-			&aggregates.OutputCount)
-
-		if aggregates.AggregateTs.After(aggregateTs) {
-			aggregateTs = aggregates.AggregateTs
-		}
-
+		var avmAggregates avm.AvmAggregratesModel
+		err = rows.Scan(&avmAggregates.AggregateTs,
+			&avmAggregates.AssetId,
+			&avmAggregates.TransactionVolume,
+			&avmAggregates.TransactionCount,
+			&avmAggregates.AddressCount,
+			&avmAggregates.AssetCount,
+			&avmAggregates.OutputCount)
 		if err != nil {
 			t.log.Error("row fetch %s", err.Error())
 			return err
 		}
 
-		_, err := t.insertAvmAggregate(ctx, sess, aggregates)
+		// aggregateTs would be update to the most recent timestamp we processed...
+		// we use it later to prune old aggregates from the db.
+		if avmAggregates.AggregateTs.After(aggregateTs) {
+			aggregateTs = avmAggregates.AggregateTs
+		}
+
+		_, err := t.insertAvmAggregate(ctx, sess, avmAggregates)
 		if db.ErrIsDuplicateEntryError(err) {
-			_, err := t.updateAvmAggregate(ctx, sess, aggregates)
+			_, err := t.updateAvmAggregate(ctx, sess, avmAggregates)
 			// the update failed.  (could be truncation?)... Punt..
 			if err != nil {
 				t.log.Error("update %s", err.Error())
@@ -193,7 +187,7 @@ func (t *ProducerTasker) RefreshAggregates() error {
 
 	// everything worked, so we can wipe id=stateBackupId backup row
 	// lets make sure our run created this row ..  so check for current_created_at match..
-	// if we didn't create the row, the creator would delete it..
+	// if we didn't create the row, the creator would delete it..  (some other producer running this code)
 	// if things go really bad, then when the process restarts the row will be re-selected and deleted then..
 	sess.
 		DeleteFrom("avm_asset_aggregation_state").
@@ -206,6 +200,23 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	t.log.Info("processed up to %s", aggregateTs.String())
 
 	return nil
+}
+
+func ComputeAndRoundCurrentAggregateTs(transactionTs avm.AvmAssetAggregationState) time.Time {
+	aggregateTs := transactionTs.CurrentCreatedAt
+
+	// round to the nearest minute..
+	roundedAggregateTs := aggregateTs.Round(1 * time.Minute)
+
+	// if we rounded half up, then lets just step back 1 minute to avoid losing anything.
+	// better to redo a minute than lose one.
+	if roundedAggregateTs.After(aggregateTs) {
+		aggregateTs = roundedAggregateTs.Add(-1 * time.Minute)
+	} else {
+		aggregateTs = roundedAggregateTs
+	}
+
+	return aggregateTs
 }
 
 func (t *ProducerTasker) ConstAggregateDeleteFrame() time.Duration {

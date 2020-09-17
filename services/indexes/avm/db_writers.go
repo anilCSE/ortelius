@@ -13,12 +13,10 @@ import (
 	"github.com/ava-labs/avalanchego/utils/math"
 	"github.com/ava-labs/avalanchego/vms/avm"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
+	"github.com/ava-labs/ortelius/services"
 	"github.com/ava-labs/ortelius/services/db"
-	"github.com/ava-labs/ortelius/services/indexes/params"
 	"github.com/gocraft/dbr/v2"
 	"github.com/gocraft/health"
-
-	"github.com/ava-labs/ortelius/services"
 )
 
 const (
@@ -336,11 +334,7 @@ func (db *DB) ingestOutput(ctx services.ConsumerCtx, txID ids.ID, idx uint32, as
 	// fire and forget..
 	// update the created_at on the state table if we have an earlier date in ctx.Time().
 	// which means we need to re-run aggregation calculations from this earlier date.
-	ctx.DB().
-		Update("avm_asset_aggregation_state").
-		Set("created_at", ctx.Time()).
-		Where("id = ? and created_at > ?", params.StateLiveId, ctx.Time()).
-		ExecContext(ctx.Ctx())
+	UpdateAvmAssetAggregationLiveStateTimestamp(ctx.Ctx(), ctx.DB(), ctx.Time())
 
 	if err != nil {
 		// We got an error and it's not a duplicate entry error, so log it

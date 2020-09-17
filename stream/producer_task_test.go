@@ -84,10 +84,18 @@ func TestParse(t *testing.T) {
 		return nil, nil
 	}
 
+	// produce an expected timestamp to test..
+	timenow := time.Now().Round(1 * time.Minute)
+	timeProducerFunc := func() time.Time {
+		return timenow
+	}
+
 	tasker := ProducerTasker{connections: co,
 		avmOutputsCursor:   outputsAggregateOverride,
 		insertAvmAggregate: insertAvm,
-		updateAvmAggregate: updateAvm}
+		updateAvmAggregate: updateAvm,
+		timeStampProducer:  timeProducerFunc,
+	}
 
 	// override function to call my tables
 	tasker.avmOutputsCursor = outputsAggregateOverride
@@ -140,6 +148,9 @@ func TestParse(t *testing.T) {
 	transactionTs, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
 	if transactionTs.Id != params.StateLiveId {
 		t.Errorf("state live not created")
+	}
+	if !transactionTs.CreatedAt.Equal(timenow.Add(additionalHours)) {
+		t.Errorf("state live createdat not reset to the future")
 	}
 	if transactionTsBackup.Id != 0 {
 		t.Errorf("state backup not removed")

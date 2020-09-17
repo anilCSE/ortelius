@@ -56,6 +56,14 @@ func InsertAvmAssetAggregation(ctx context.Context, sess *dbr.Session, aggregate
 		aggregates.OutputCount)
 }
 
+func UpdateAvmAssetAggregationLiveStateTimestamp(ctx context.Context, sess dbr.SessionRunner, time time.Time) (sql.Result, error) {
+	return sess.
+		Update("avm_asset_aggregation_state").
+		Set("created_at", time).
+		Where("id = ? and created_at > ?", params.StateLiveId, time).
+		ExecContext(ctx)
+}
+
 type AvmAssetAggregationState struct {
 	Id               uint64    `json:"id"`
 	CreatedAt        time.Time `json:"createdAt"`
