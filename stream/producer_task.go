@@ -83,7 +83,8 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	sess := t.connections.DB().NewSession(job)
 
 	var err error
-	var transactionTs avm.AvmAssetAggregationState
+	var liveAggregationState avm.AvmAssetAggregationStateModel
+	var backupAggregateState avm.AvmAssetAggregationStateModel
 
 	// initialize the assset_aggregation_state table with id=stateLiveId row.
 	// if the row has not been created..
@@ -91,13 +92,13 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	avm.InsertAvmAssetAggregationState(ctx, sess, params.StateLiveId, time.Unix(1, 0), time.Unix(1, 0))
 
 	// check if the backup row exists, if found we crashed from a previous run.
-	transactionTsBackup, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
+	backupAggregateState, err = avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
 
-	if transactionTsBackup.Id == uint64(params.StateBackupId) {
+	if backupAggregateState.Id == uint64(params.StateBackupId) {
 		// re-process from backup row..
-		transactionTs.Id = transactionTsBackup.Id
-		transactionTs.CreatedAt = transactionTsBackup.CreatedAt
-		transactionTs.CurrentCreatedAt = transactionTsBackup.CurrentCreatedAt
+		liveAggregationState.Id = backupAggregateState.Id
+		liveAggregationState.CreatedAt = backupAggregateState.CreatedAt
+		liveAggregationState.CurrentCreatedAt = backupAggregateState.CurrentCreatedAt
 	} else {
 		// make a copy of the last created_at, and reset to now + 1 years in the future
 		// we are using the db as an atomic swap...
@@ -113,34 +114,34 @@ func (t *ProducerTasker) RefreshAggregates() error {
 			return err
 		}
 
-		transactionTs, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
+		liveAggregationState, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
 
 		// this is really bad, the state live row was not created..  we cannot proceed safely.
-		if transactionTs.Id != params.StateLiveId {
+		if liveAggregationState.Id != params.StateLiveId {
 			t.log.Error("unable to find live state")
 			return err
 		}
 
 		// id=stateBackupId backup row - for crash recovery
-		avm.InsertAvmAggregationState(ctx, sess, transactionTs)
+		avm.InsertAvmAggregationState(ctx, sess, liveAggregationState)
 
 		// setup the transactionBackup so that it can be removed.
 		// copy of the live forw.
-		transactionTsBackup = transactionTs
-		transactionTsBackup.Id = params.StateBackupId
+		backupAggregateState = liveAggregationState
+		backupAggregateState.Id = params.StateBackupId
 
-		transactionTsBackupCheck, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
+		tmpBackupAggregationState, err := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
 
 		// so for some reason the backup row was _not_ created.
 		// it could be ours or others, but we still don't have one, which is bad.
 		// so punt.
-		if transactionTsBackupCheck.Id != params.StateBackupId {
+		if tmpBackupAggregationState.Id != params.StateBackupId {
 			t.log.Error("unable to find a backup state")
 			return err
 		}
 	}
 
-	aggregateTs := ComputeAndRoundCurrentAggregateTs(transactionTs)
+	aggregateTs := ComputeAndRoundCurrentAggregateTs(liveAggregationState)
 
 	var rows *sql.Rows
 	rows, err = t.avmOutputsCursor(ctx, sess, aggregateTs)
@@ -191,7 +192,7 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	// if things go really bad, then when the process restarts the row will be re-selected and deleted then..
 	sess.
 		DeleteFrom("avm_asset_aggregation_state").
-		Where("id = ? and current_created_at = ?", params.StateBackupId, transactionTsBackup.CurrentCreatedAt).
+		Where("id = ? and current_created_at = ?", params.StateBackupId, backupAggregateState.CurrentCreatedAt).
 		ExecContext(ctx)
 
 	// delete aggregate data before aggregateDeleteFrame
@@ -202,8 +203,8 @@ func (t *ProducerTasker) RefreshAggregates() error {
 	return nil
 }
 
-func ComputeAndRoundCurrentAggregateTs(transactionTs avm.AvmAssetAggregationState) time.Time {
-	aggregateTs := transactionTs.CurrentCreatedAt
+func ComputeAndRoundCurrentAggregateTs(aggregateState avm.AvmAssetAggregationStateModel) time.Time {
+	aggregateTs := aggregateState.CurrentCreatedAt
 
 	// round to the nearest minute..
 	roundedAggregateTs := aggregateTs.Round(1 * time.Minute)

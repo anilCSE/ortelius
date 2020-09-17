@@ -144,15 +144,15 @@ func TestParse(t *testing.T) {
 		t.Errorf("refresh failed %s", err.Error())
 	}
 
-	transactionTsBackup, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
-	transactionTs, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
-	if transactionTs.Id != params.StateLiveId {
+	backupAggregationState, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateBackupId)
+	liveAggregationState, _ := avm.SelectAvmAssetAggregationState(ctx, sess, params.StateLiveId)
+	if liveAggregationState.Id != params.StateLiveId {
 		t.Errorf("state live not created")
 	}
-	if !transactionTs.CreatedAt.Equal(timenow.Add(additionalHours)) {
+	if !liveAggregationState.CreatedAt.Equal(timenow.Add(additionalHours)) {
 		t.Errorf("state live createdat not reset to the future")
 	}
-	if transactionTsBackup.Id != 0 {
+	if backupAggregationState.Id != 0 {
 		t.Errorf("state backup not removed")
 	}
 

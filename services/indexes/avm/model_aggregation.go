@@ -64,14 +64,14 @@ func UpdateAvmAssetAggregationLiveStateTimestamp(ctx context.Context, sess dbr.S
 		ExecContext(ctx)
 }
 
-type AvmAssetAggregationState struct {
+type AvmAssetAggregationStateModel struct {
 	Id               uint64    `json:"id"`
 	CreatedAt        time.Time `json:"createdAt"`
 	CurrentCreatedAt time.Time `json:"currentCreatedAt"`
 }
 
-func SelectAvmAssetAggregationState(ctx context.Context, sess *dbr.Session, id int) (AvmAssetAggregationState, error) {
-	var tTx AvmAssetAggregationState
+func SelectAvmAssetAggregationState(ctx context.Context, sess *dbr.Session, id int) (AvmAssetAggregationStateModel, error) {
+	var tTx AvmAssetAggregationStateModel
 	err := sess.
 		Select("id", "created_at", "current_created_at").
 		From("avm_asset_aggregation_state").
@@ -80,12 +80,12 @@ func SelectAvmAssetAggregationState(ctx context.Context, sess *dbr.Session, id i
 	return tTx, err
 }
 
-func InsertAvmAggregationState(ctx context.Context, sess *dbr.Session, transactionTs AvmAssetAggregationState) (sql.Result, error) {
+func InsertAvmAggregationState(ctx context.Context, sess *dbr.Session, a AvmAssetAggregationStateModel) (sql.Result, error) {
 	return sess.
 		InsertInto("avm_asset_aggregation_state").
 		Pair("id", params.StateBackupId).
-		Pair("created_at", transactionTs.CreatedAt).
-		Pair("current_created_at", transactionTs.CurrentCreatedAt).
+		Pair("created_at", a.CreatedAt).
+		Pair("current_created_at", a.CurrentCreatedAt).
 		ExecContext(ctx)
 }
 
