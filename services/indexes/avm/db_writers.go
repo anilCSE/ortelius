@@ -14,6 +14,7 @@ import (
 	"github.com/ava-labs/avalanchego/vms/avm"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	"github.com/ava-labs/ortelius/services/db"
+	"github.com/ava-labs/ortelius/services/params"
 	"github.com/gocraft/dbr/v2"
 	"github.com/gocraft/health"
 
@@ -338,7 +339,7 @@ func (db *DB) ingestOutput(ctx services.ConsumerCtx, txID ids.ID, idx uint32, as
 	ctx.DB().
 		Update("asset_aggregation_state").
 		Set("created_at", ctx.Time()).
-		Where("id = ? and created_at > ?", 0, ctx.Time()).
+		Where("id = ? and created_at > ?", params.StateLiveId, ctx.Time()).
 		ExecContext(ctx.Ctx())
 
 	if err != nil {

@@ -129,7 +129,7 @@ func (db *DB) Aggregate(ctx context.Context, params *AggregateParams) (*Aggregat
 
 		if requestedIntervalCount > 0 {
 			columns = append(columns, fmt.Sprintf(
-				"FLOOR((UNIX_TIMESTAMP(asset_aggregation.aggregation_ts)-%d) / %d) AS idx",
+				"FLOOR((UNIX_TIMESTAMP(asset_aggregation.aggregate_ts)-%d) / %d) AS idx",
 				params.StartTime.Unix(),
 				intervalSeconds))
 		}

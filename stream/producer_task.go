@@ -3,8 +3,10 @@ package stream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/ava-labs/ortelius/services"
 	"github.com/ava-labs/ortelius/services/db"
+	"github.com/ava-labs/ortelius/services/params"
 	"sync"
 	"time"
 
@@ -15,6 +17,16 @@ import (
 var (
 	aggregationTick      = 20 * time.Second
 	aggregateDeleteFrame = (-1 * 24 * 366) * time.Hour
+	timestampRollup      = 60
+	aggregateColumns     = []string{
+		fmt.Sprintf("FROM_UNIXTIME(floor(UNIX_TIMESTAMP(avm_outputs.created_at) / %d) * %d) as aggregate_ts", timestampRollup, timestampRollup),
+		"avm_outputs.asset_id",
+		"CAST(COALESCE(SUM(avm_outputs.amount), 0) AS CHAR) AS transaction_volume",
+		"COUNT(DISTINCT(avm_outputs.transaction_id)) AS transaction_count",
+		"COUNT(DISTINCT(avm_output_addresses.address)) AS address_count",
+		"COUNT(DISTINCT(avm_outputs.asset_id)) AS asset_count",
+		"COUNT(avm_outputs.id) AS output_count",
+	}
 )
 
 type ProducerTasker struct {
@@ -60,10 +72,10 @@ func (t *ProducerTasker) Init(connections *services.Connections) error {
 	job := connections.Stream().NewJob("producertasker")
 	sess := connections.DB().NewSession(job)
 
-	// initialize the assset_aggregation_state table with at least 1 row.
+	// initialize the assset_aggregation_state table with id=stateLiveId row.
 	sess.
 		InsertInto("asset_aggregation_state").
-		Pair("id", 0).
+		Pair("id", params.StateLiveId).
 		Pair("created_at", time.Unix(1, 0)).
 		Pair("current_created_at", time.Unix(1, 0)).
 		ExecContext(ctx)
@@ -74,13 +86,16 @@ func (t *ProducerTasker) Init(connections *services.Connections) error {
 	_, err := sess.
 		Select("count(*)").
 		From("asset_aggregation_state").
+		Where("id = ?", params.StateLiveId).
 		LoadContext(ctx, &resp)
 	if err != nil {
 		return err
 	}
+
 	if resp < 1 {
 		return errors.New("asset_aggregation_state failed")
 	}
+
 	return nil
 }
 
@@ -95,6 +110,7 @@ type Aggregrates struct {
 }
 
 type TransactionTs struct {
+	Id               uint64    `json:"id"`
 	CreatedAt        time.Time `json:"createdAt"`
 	CurrentCreatedAt time.Time `json:"currentCreatedAt"`
 }
@@ -103,36 +119,54 @@ func (t *ProducerTasker) RefreshAggregates() {
 	t.plock.Lock()
 	defer t.plock.Unlock()
 
-	columns := []string{
-		"FROM_UNIXTIME(floor(UNIX_TIMESTAMP(avm_outputs.created_at) / 60) * 60) as aggregate_ts",
-		"avm_outputs.asset_id",
-		"CAST(COALESCE(SUM(avm_outputs.amount), 0) AS CHAR) AS transaction_volume",
-		"COUNT(DISTINCT(avm_outputs.transaction_id)) AS transaction_count",
-		"COUNT(DISTINCT(avm_output_addresses.address)) AS address_count",
-		"COUNT(DISTINCT(avm_outputs.asset_id)) AS asset_count",
-		"COUNT(avm_outputs.id) AS output_count",
-	}
-
 	ctx, _ := context.WithTimeout(context.Background(), 5*time.Minute)
 
 	job := t.connections.Stream().NewJob("producertasker")
 	sess := t.connections.DB().NewSession(job)
 
-	// make a copy of the last created_at, and reset to now + 100 years in the future
+	var err error
+
+	// make a copy of the last created_at, and reset to now + 1 years in the future
 	// we are using the db as an atomic swap...
 	// current_created_at is set to the newest aggregation timestamp from the message queue.
 	// and in the same update we reset created_at to a future event.
 	// when we get new messages from the queue, they will event _after_ this update, and set created_at to an earlier date.
-	sess.ExecContext(ctx, "update asset_aggregation_state "+
-		"set current_created_at=created_at, created_at=(CURRENT_TIMESTAMP()+INTERVAL 100 YEAR)"+
-		"where id=0")
+	_, err = sess.ExecContext(ctx, "update asset_aggregation_state "+
+		"set current_created_at=created_at, created_at=(CURRENT_TIMESTAMP()+INTERVAL 1 YEAR) "+
+		"where id=?", params.StateLiveId)
+	if err != nil {
+		t.log.Error("atomic swap %s", err.Error())
+		return
+	}
 
 	var transactionTs TransactionTs
-	err := sess.
-		Select("created_at", "current_created_at").
+	sess.
+		Select("id", "created_at", "current_created_at").
 		From("asset_aggregation_state").
-		Where("id = ?", 0).
+		Where("id = ?", params.StateLiveId).
 		LoadOneContext(ctx, &transactionTs)
+	var transactionTs1 TransactionTs
+	sess.
+		Select("id", "created_at", "current_created_at").
+		From("asset_aggregation_state").
+		Where("id = ?", params.StateBackupId).
+		LoadOneContext(ctx, &transactionTs1)
+
+	// so see a state backup row (id=stateBackupId), which means another run is in process, or crashed.
+	// take over the previous work...
+	if transactionTs1.Id == uint64(params.StateBackupId) {
+		transactionTs.Id = transactionTs1.Id
+		transactionTs.CreatedAt = transactionTs1.CreatedAt
+		transactionTs.CurrentCreatedAt = transactionTs1.CurrentCreatedAt
+	} else {
+		// id=stateBackupId backup row - for crash recovery
+		sess.
+			InsertInto("asset_aggregation_state").
+			Pair("id", params.StateBackupId).
+			Pair("created_at", transactionTs.CreatedAt).
+			Pair("current_created_at", transactionTs.CurrentCreatedAt).
+			ExecContext(ctx)
+	}
 
 	aggregateTs := transactionTs.CurrentCreatedAt
 
@@ -148,7 +182,7 @@ func (t *ProducerTasker) RefreshAggregates() {
 	}
 
 	rows, err := sess.
-		Select(columns...).
+		Select(aggregateColumns...).
 		From("avm_outputs").
 		LeftJoin("avm_output_addresses", "avm_output_addresses.output_id = avm_outputs.id").
 		GroupBy("aggregate_ts", "avm_outputs.asset_id").
@@ -175,7 +209,8 @@ func (t *ProducerTasker) RefreshAggregates() {
 		}
 
 		if err != nil {
-			t.log.Error("error query %s", err.Error())
+			t.log.Error("row fetch %s", err.Error())
+			return
 		}
 
 		_, err := sess.ExecContext(ctx, "insert into asset_aggregation "+
@@ -183,16 +218,21 @@ func (t *ProducerTasker) RefreshAggregates() {
 			"values (?,?,CONVERT(?,DECIMAL(65)),?,?,?,?)",
 			aggregates.AggregateTs,
 			aggregates.AssetId,
-			aggregates.TransactionVolume,
+			aggregates.TransactionVolume, // string -> converted to decimal in db
 			aggregates.TransactionCount,
 			aggregates.AddressCount,
 			aggregates.AssetCount,
 			aggregates.OutputCount)
 		if db.ErrIsDuplicateEntryError(err) {
 			_, err := sess.ExecContext(ctx, "update asset_aggregation "+
-				"set transaction_volume=CONVERT(?,DECIMAL(65)),transaction_count=?,address_count=?,asset_count=?,output_count=? "+
+				"set "+
+				" transaction_volume=CONVERT(?,DECIMAL(65)),"+
+				" transaction_count=?,"+
+				" address_count=?,"+
+				" asset_count=?,"+
+				" output_count=? "+
 				"where aggregate_ts = ? AND asset_id = ?",
-				aggregates.TransactionVolume,
+				aggregates.TransactionVolume, // string -> converted to decimal in db
 				aggregates.TransactionCount,
 				aggregates.AddressCount,
 				aggregates.OutputCount,
@@ -201,11 +241,22 @@ func (t *ProducerTasker) RefreshAggregates() {
 				aggregates.AssetId)
 			if err != nil {
 				t.log.Error("update %s", err.Error())
+				return
 			}
 		} else if err != nil {
 			t.log.Error("insert %s", err.Error())
+			return
 		}
 	}
+
+	// everything worked, so we can wipe id=stateBackupId backup row
+	// lets make sure we created this row ..  so check for current_created_at.
+	// if we didn't create the row, the creator would delete it..
+	// if things go really bad, then when the process restarts the row will be re-selected and deleted then..
+	sess.
+		DeleteFrom("asset_aggregation_state").
+		Where("id = ? and current_created_at = ?", params.StateBackupId, transactionTs1.CurrentCreatedAt).
+		ExecContext(ctx)
 
 	// delete aggregate data before aggregateDeleteFrame
 	sess.
