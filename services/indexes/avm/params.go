@@ -362,6 +362,7 @@ type ListOutputsParams struct {
 	Addresses []ids.ShortID
 	Spent     *bool
 	Query     string
+	DisableCounting int
 }
 
 func (p *ListOutputsParams) ForValues(q url.Values) error {
@@ -391,6 +392,11 @@ func (p *ListOutputsParams) ForValues(q url.Values) error {
 			return err
 		}
 		p.Spent = &b
+	}
+
+	p.DisableCounting, err = params.GetQueryInt(q, params.KeyDisableCount, 0)
+	if err != nil {
+		return err
 	}
 
 	return nil

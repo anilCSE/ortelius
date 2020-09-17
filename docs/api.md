@@ -140,6 +140,7 @@ Array of Address objects
 
 ```json
 [
+  "count": 0,
   {
     "address": "2poot6VNEurx99o5WZigk2ic3ssj2T5Fz",
     "publicKey": null,

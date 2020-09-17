@@ -306,7 +306,7 @@ func (db *DB) ListAssets(ctx context.Context, p *ListAssetsParams) (*AssetList, 
 	var count uint64
 	count = 0
 	if p.DisableCounting == 0 {
-		count := uint64(p.Offset) + uint64(len(assets))
+		count = uint64(p.Offset) + uint64(len(assets))
 		if len(assets) >= p.Limit {
 			p.ListParams = params.ListParams{}
 			err := p.Apply(dbRunner.
@@ -339,7 +339,7 @@ func (db *DB) ListAddresses(ctx context.Context, p *ListAddressesParams) (*Addre
 	var count uint64
 	count = 0
 	if p.DisableCounting == 0 {
-		count := uint64(p.Offset) + uint64(len(addresses))
+		count = uint64(p.Offset) + uint64(len(addresses))
 		if len(addresses) >= p.Limit {
 			p.ListParams = params.ListParams{}
 			err = p.Apply(dbRunner.
@@ -405,15 +405,19 @@ func (db *DB) ListOutputs(ctx context.Context, p *ListOutputsParams) (*OutputLis
 		output.Addresses = append(output.Addresses, address.Address)
 	}
 
-	count := uint64(p.Offset) + uint64(len(outputs))
-	if len(outputs) >= p.Limit {
-		p.ListParams = params.ListParams{}
-		err = p.Apply(dbRunner.
-			Select("COUNT(avm_outputs.id)").
-			From("avm_outputs")).
-			LoadOneContext(ctx, &count)
-		if err != nil {
-			return nil, err
+	var count uint64
+	count = 0
+	if p.DisableCounting == 0 {
+		count = uint64(p.Offset) + uint64(len(outputs))
+		if len(outputs) >= p.Limit {
+			p.ListParams = params.ListParams{}
+			err = p.Apply(dbRunner.
+				Select("COUNT(avm_outputs.id)").
+				From("avm_outputs")).
+				LoadOneContext(ctx, &count)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
