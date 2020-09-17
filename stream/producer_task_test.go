@@ -40,7 +40,7 @@ func TestParse(t *testing.T) {
 		t.Errorf("open db %s", err.Error())
 	}
 
-	tm := testhelperlib.SqlliteModels{}
+	tm := testhelperlib.SqliteTestModels{}
 	err = tm.CreateModels(c)
 	if err != nil {
 		t.Errorf("create model %s", err.Error())

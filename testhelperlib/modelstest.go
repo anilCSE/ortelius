@@ -2,10 +2,10 @@ package testhelperlib
 
 import "github.com/gocraft/dbr/v2"
 
-type SqlliteModels struct {
+type SqliteTestModels struct {
 }
 
-func (t *SqlliteModels) CreateModels(c *dbr.Connection) error {
+func (t *SqliteTestModels) CreateModels(c *dbr.Connection) error {
 	_, err := c.Exec("create table avm_asset_aggregation_state( " +
 		"id bigint unsigned not null primary key," +
 		"created_at timestamp not null default current_timestamp," +
