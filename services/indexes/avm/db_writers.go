@@ -130,6 +130,11 @@ func (db *DB) ingestTx(ctx services.ConsumerCtx, txBytes []byte) error {
 		return err
 	}
 
+	// fire and forget..
+	// update the created_at on the state table if we have an earlier date in ctx.Time().
+	// which means we need to re-run aggregation calculations from this earlier date.
+	UpdateAvmAssetAggregationLiveStateTimestamp(ctx.Ctx(), ctx.DB(), ctx.Time())
+
 	// Finish processing with a type-specific ingestion routine
 	switch castTx := tx.UnsignedTx.(type) {
 	case *avm.GenesisAsset:
@@ -330,11 +335,6 @@ func (db *DB) ingestOutput(ctx services.ConsumerCtx, txID ids.ID, idx uint32, as
 		Pair("locktime", out.Locktime).
 		Pair("threshold", out.Threshold).
 		ExecContext(ctx.Ctx())
-
-	// fire and forget..
-	// update the created_at on the state table if we have an earlier date in ctx.Time().
-	// which means we need to re-run aggregation calculations from this earlier date.
-	UpdateAvmAssetAggregationLiveStateTimestamp(ctx.Ctx(), ctx.DB(), ctx.Time())
 
 	if err != nil {
 		// We got an error and it's not a duplicate entry error, so log it
